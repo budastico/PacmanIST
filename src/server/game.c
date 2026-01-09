@@ -90,99 +90,92 @@ void handler_sigusr1(int sig) {
 // ============================================================================
 // FUNÇÃO PARA GERAR LOG COM ESTADO DE TODOS OS TABULEIROS (EXERCÍCIO 2)
 // ============================================================================
-void gerar_log_tabuleiros(const char *filename) {
+// Função para gerar ficheiro com top 5 clientes
+void gerar_top5_clientes(const char *filename) {
     FILE *f = fopen(filename, "w");
     if (!f) {
-        debug("Erro ao criar ficheiro %s\n", filename);
+        debug("Erro ao criar ficheiro %s: %s\n", filename, strerror(errno));
         return;
     }
     
+    debug("Ficheiro %s aberto com sucesso\n", filename);
+    
     time_t now = time(NULL);
-    fprintf(f, "=== LOG DE ESTADO DOS TABULEIROS ===\n");
-    fprintf(f, "Data/Hora: %s", ctime(&now));
-    fprintf(f, "====================================\n\n");
+    fprintf(f, "=== TOP 5 CLIENTES ===\n");
+    fprintf(f, "Data/Hora: %s\n", ctime(&now));
     
     pthread_mutex_lock(&clientes_mutex);
     
-    int jogos_ativos = 0;
+    // Contar clientes ativos
+    int n_ativos = 0;
     for (int i = 0; i < max_games; i++) {
         if (clientes_ativos[i].active) {
-            jogos_ativos++;
+            n_ativos++;
         }
     }
     
-    fprintf(f, "Jogos ativos: %d / %d\n\n", jogos_ativos, max_games);
+    debug("Número de clientes ativos: %d\n", n_ativos);
+    fprintf(f, "Clientes conectados: %d\n\n", n_ativos);
     
-    // Percorrer todos os clientes ativos e descrever o estado do tabuleiro
+    // Se não há clientes, terminar
+    if (n_ativos == 0) {
+        pthread_mutex_unlock(&clientes_mutex);
+        fprintf(f, "Nenhum cliente ativo no momento.\n");
+        fclose(f);
+        debug("Ficheiro %s gerado (sem clientes ativos)\n", filename);
+        return;
+    }
+    
+    // Copiar clientes ativos para array temporário
+    typedef struct {
+        int client_id;
+        int points;
+    } cliente_rank_t;
+    
+    cliente_rank_t *ranking = malloc(n_ativos * sizeof(cliente_rank_t));
+    if (!ranking) {
+        pthread_mutex_unlock(&clientes_mutex);
+        fprintf(f, "Erro: Não foi possível alocar memória.\n");
+        fclose(f);
+        debug("Erro ao alocar memória para ranking\n");
+        return;
+    }
+    int idx = 0;
     for (int i = 0; i < max_games; i++) {
-        if (!clientes_ativos[i].active) continue;
-        
-        client_info_t *cliente = &clientes_ativos[i];
-        board_t *board = cliente->board;
-        
-        fprintf(f, "--- Cliente ID: %d ---\n", cliente->client_id);
-        fprintf(f, "Pontuação: %d\n", cliente->points);
-        
-        if (board == NULL) {
-            fprintf(f, "Estado: Tabuleiro não disponível\n\n");
-            continue;
+        if (clientes_ativos[i].active) {
+            ranking[idx].client_id = clientes_ativos[i].client_id;
+            ranking[idx].points = clientes_ativos[i].points;
+            idx++;
         }
-        
-        // Adquirir read lock no tabuleiro para leitura segura
-        pthread_rwlock_rdlock(&board->state_lock);
-        
-        fprintf(f, "Nível: %s\n", board->level_name);
-        fprintf(f, "Dimensões: %d x %d\n", board->width, board->height);
-        fprintf(f, "Tempo por jogada: %d ms\n", board->tempo);
-        
-        // Estado do Pacman
-        if (board->n_pacmans > 0) {
-            pacman_t *pac = &board->pacmans[0];
-            fprintf(f, "Pacman: posição (%d, %d), vivo=%d, pontos=%d\n",
-                    pac->pos_x, pac->pos_y, pac->alive, pac->points);
-        }
-        
-        // Estado dos fantasmas
-        fprintf(f, "Fantasmas: %d\n", board->n_ghosts);
-        for (int g = 0; g < board->n_ghosts; g++) {
-            ghost_t *ghost = &board->ghosts[g];
-            fprintf(f, "  Fantasma %d: posição (%d, %d), charged=%d\n",
-                    g, ghost->pos_x, ghost->pos_y, ghost->charged);
-        }
-        
-        // Desenhar o tabuleiro
-        fprintf(f, "\nTabuleiro:\n");
-        for (int y = 0; y < board->height; y++) {
-            for (int x = 0; x < board->width; x++) {
-                int idx = y * board->width + x;
-                board_pos_t *pos = &board->board[idx];
-                char c = pos->content;
-                
-                // Mostrar conteúdo ou ponto
-                if (c == ' ' || c == '\0') {
-                    if (pos->has_dot) {
-                        fprintf(f, ".");
-                    } else if (pos->has_portal) {
-                        fprintf(f, "O");
-                    } else {
-                        fprintf(f, " ");
-                    }
-                } else {
-                    fprintf(f, "%c", c);
-                }
-            }
-            fprintf(f, "\n");
-        }
-        
-        pthread_rwlock_unlock(&board->state_lock);
-        fprintf(f, "\n");
     }
     
     pthread_mutex_unlock(&clientes_mutex);
     
-    fprintf(f, "=== FIM DO LOG ===\n");
+    // Ordenar por pontuação (bubble sort simples)
+    for (int i = 0; i < n_ativos - 1; i++) {
+        for (int j = 0; j < n_ativos - i - 1; j++) {
+            if (ranking[j].points < ranking[j+1].points) {
+                cliente_rank_t temp = ranking[j];
+                ranking[j] = ranking[j+1];
+                ranking[j+1] = temp;
+            }
+        }
+    }
+    
+    // Escrever top 5 (ou menos se houver menos clientes)
+    int top = (n_ativos < 5) ? n_ativos : 5;
+    fprintf(f, "Rank | Cliente ID | Pontuação\n");
+    fprintf(f, "--------------------------------\n");
+    for (int i = 0; i < top; i++) {
+        fprintf(f, " %d   | %10d | %9d\n", 
+                i+1, ranking[i].client_id, ranking[i].points);
+    }
+    
+    fprintf(f, "\n=== FIM DO LOG ===\n");
+    
+    free(ranking);
     fclose(f);
-    debug("Ficheiro de log %s gerado com sucesso\n", filename);
+    debug("Ficheiro %s gerado com sucesso!\n", filename);
 }
 
 // Função auxiliar para converter o tabuleiro em dados para enviar ao cliente
@@ -609,9 +602,8 @@ int main(int argc, char** argv) {
         return -1;
     }
     
-    // Mudar para modo bloqueante para reads normais
-    int flags = fcntl(fd_registo, F_GETFL);
-    fcntl(fd_registo, F_SETFL, flags & ~O_NONBLOCK);
+    // MANTER em modo não-bloqueante para o select() funcionar corretamente
+    // (não mudar para bloqueante)
 
     // ========================================================================
     // 5. Ciclo da Tarefa Anfitriã - recebe pedidos e coloca no buffer
@@ -625,8 +617,14 @@ int main(int argc, char** argv) {
         if (sigusr1_recebido) {
             debug("Flag sigusr1_recebido detectada, gerando ficheiro...\n");
             sigusr1_recebido = 0;  // Reset
-            gerar_log_tabuleiros("estado_tabuleiros.log");
-            debug("Ficheiro de log gerado após SIGUSR1\n");
+            gerar_top5_clientes("top5_clientes.txt");
+            debug("Ficheiro top5_clientes.txt gerado após SIGUSR1\n");
+        }
+        
+        // DEBUG: indicar que o loop está a executar
+        static int loop_count = 0;
+        if (++loop_count % 10 == 0) {
+            debug("Loop anfitriã executando (iteração %d)\n", loop_count);
         }
         
         // Configurar select com timeout para verificar sinal periodicamente
@@ -650,13 +648,20 @@ int main(int argc, char** argv) {
         
         if (ready == 0) {
             // Timeout - volta ao início do loop para verificar flag
+            debug("Select timeout, voltando ao início do loop\n");
             continue;
         }
         
         // Dados disponíveis para leitura
+        debug("Select retornou ready=%d, tentando ler...\n", ready);
         ssize_t bytes_read = read(fd_registo, &pedido, sizeof(msg_connect_t));
         
         if (bytes_read <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Não há dados disponíveis (não deveria acontecer após select)
+                debug("EAGAIN após select, continuando...\n");
+                continue;
+            }
             // FIFO fechado, reabrir com retry em caso de EINTR
             close(fd_registo);
             do {

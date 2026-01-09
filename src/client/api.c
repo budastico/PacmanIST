@@ -21,7 +21,11 @@ struct Session {
 static struct Session session = {.id = -1};
 
 int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char const *server_pipe_path) {
-    // 1. Criar os FIFOs do cliente [cite: 39]
+    // 1. Remover FIFOs antigos se existirem
+    unlink(req_pipe_path);
+    unlink(notif_pipe_path);
+    
+    // 2. Criar os FIFOs do cliente [cite: 39]
     if (mkfifo(req_pipe_path, 0666) == -1 || mkfifo(notif_pipe_path, 0666) == -1) {
         return 1;
     }
