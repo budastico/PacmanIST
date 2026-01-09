@@ -1,0 +1,12 @@
+# Ficheiros compilados
+bin/
+obj/
+
+# Ficheiros do sistema
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Ficheiros de debug
+*.dSYM/

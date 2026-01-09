@@ -1,0 +1,14 @@
+# Dimensões da matriz do nível (largura altura)
+DIM 6 6
+# Duração de cada jogada em milissegundos
+TEMPO 10
+PAC pacman.p
+# Ficheiros de monstros
+MON 1.m 3.m
+# Matriz: X=parede, o=espaço, @=portal
+XXoXXX
+XoooXX
+XoXoXX
+Xooo@X
+XooooX
+XXXXXX
