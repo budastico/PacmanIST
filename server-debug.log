@@ -1,65 +1,6 @@
-Signal handler SIGUSR1 configurado
+Handler SIGUSR1 configurado
 Criadas 3 tarefas worker
 Servidor iniciado. FIFO: /tmp/pacman_server, max_games: 3
-Anfitriã: Pedido de conexão recebido
-  Pipe pedidos: /tmp/101_request
-  Pipe notificações: /tmp/101_notification
-Anfitriã: Pedido inserido no buffer
-Worker: A processar pedido de conexão
-  Pipe pedidos: /tmp/101_request
-  Pipe notificações: /tmp/101_notification
-Cliente 101 registado
-Cliente conectado com sucesso!
-DIM = 6 x 6
-TEMPO = 10
-PAC = levels/pacman.p
-MON file: levels/1.m
-MON file: levels/3.m
-Line: XXoXXX
-Line: XoooXX
-Line: XoXoXX
-Line: Xooo@X
-Line: XooooX
-Line: XXXXXX
-Pacman passo: 1
-Pacman Pos = 1 x 1
-Ghost passo: 1
-Ghost Pos = 4 x 1
-Ghost passo: 1
-Ghost Pos = 4 x 2
-Nível carregado: 6x6
-Killing 0 pacman
-
-Anfitriã: Pedido de conexão recebido
-  Pipe pedidos: /tmp/202_request
-  Pipe notificações: /tmp/202_notification
-Anfitriã: Pedido inserido no buffer
-Worker: A processar pedido de conexão
-  Pipe pedidos: /tmp/202_request
-  Pipe notificações: /tmp/202_notification
-Cliente 202 registado
-Cliente conectado com sucesso!
-DIM = 6 x 6
-TEMPO = 10
-PAC = levels/pacman.p
-MON file: levels/1.m
-MON file: levels/3.m
-Line: XXoXXX
-Line: XoooXX
-Line: XoXoXX
-Line: Xooo@X
-Line: XooooX
-Line: XXXXXX
-Pacman passo: 1
-Pacman Pos = 1 x 1
-Ghost passo: 1
-Ghost Pos = 4 x 1
-Ghost passo: 1
-Ghost Pos = 4 x 2
-Nível carregado: 6x6
-Killing 0 pacman
-
-Cliente 101 removido (pontuação final: 0)
-Sessão terminada.
-Cliente 202 removido (pontuação final: 0)
-Sessão terminada.
+Flag sigusr1_recebido detectada, gerando ficheiro...
+Ficheiro top5_clientes.txt gerado com sucesso
+Ficheiro top5 gerado após SIGUSR1

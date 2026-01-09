@@ -11,6 +11,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <semaphore.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/select.h>
 
 #define CONTINUE_PLAY 0
 #define NEXT_LEVEL 1
@@ -35,6 +38,26 @@ static pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int max_games = 1;
 static char *levels_dir_global = NULL;
 
+// ============================================================================
+// ESTRUTURAS E VARIÁVEIS PARA GESTÃO DE CLIENTES E SIGUSR1
+// ============================================================================
+
+// Estrutura para guardar informação de clientes ativos
+typedef struct {
+    int client_id;           // ID único do cliente
+    int points;              // Pontuação atual
+    int active;              // Se está ativo (1) ou não (0)
+    pthread_mutex_t lock;    // Para acesso concorrente
+} client_info_t;
+
+// Array global de clientes (tamanho max_games)
+static client_info_t *clientes_ativos = NULL;
+static int next_client_id = 1;  // Contador de IDs
+static pthread_mutex_t clientes_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Variável volátil para o handler do sinal
+static volatile sig_atomic_t sigusr1_recebido = 0;
+
 // Estrutura para passar argumentos para as threads da sessão
 typedef struct {
     board_t *board;
@@ -42,6 +65,8 @@ typedef struct {
     int fd_notif;
     int *thread_shutdown;  // Flag por sessão
     int *player_victory;   // Flag por sessão
+    int client_id;         // ID único do cliente
+    int *client_index;     // Índice no array de clientes
 } session_args_t;
 
 typedef struct {
@@ -49,6 +74,62 @@ typedef struct {
     int ghost_index;
     int *thread_shutdown;  // Flag por sessão
 } ghost_thread_arg_t;
+
+// ============================================================================
+// HANDLER DE SINAL SIGUSR1
+// ============================================================================
+void handler_sigusr1(int sig) {
+    (void)sig;
+    sigusr1_recebido = 1;  // Memorizar que recebeu SIGUSR1
+    // Nota: não podemos usar debug() aqui (não é async-signal-safe)
+    // mas podemos escrever diretamente em stderr
+    write(STDERR_FILENO, "SIGUSR1 recebido!\n", 18);
+}
+
+// ============================================================================
+// FUNÇÃO PARA GERAR FICHEIRO COM TOP 5 CLIENTES
+// ============================================================================
+void gerar_top5_clientes(const char *filename) {
+    FILE *f = fopen(filename, "w");
+    if (!f) {
+        debug("Erro ao criar ficheiro %s\n", filename);
+        return;
+    }
+    
+    pthread_mutex_lock(&clientes_mutex);
+    
+    // Copiar clientes ativos para array temporário
+    client_info_t temp[MAX_BUFFER_SIZE];
+    int count = 0;
+    for (int i = 0; i < max_games; i++) {
+        if (clientes_ativos[i].active) {
+            temp[count++] = clientes_ativos[i];
+        }
+    }
+    
+    // Ordenar por pontuação (bubble sort simples)
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
+            if (temp[j].points < temp[j+1].points) {
+                client_info_t aux = temp[j];
+                temp[j] = temp[j+1];
+                temp[j+1] = aux;
+            }
+        }
+    }
+    
+    // Escrever top 5 (ou menos se houver menos de 5)
+    int top = count < 5 ? count : 5;
+    fprintf(f, "TOP %d CLIENTES:\n", top);
+    for (int i = 0; i < top; i++) {
+        fprintf(f, "%d. Cliente ID %d - %d pontos\n", 
+                i+1, temp[i].client_id, temp[i].points);
+    }
+    
+    pthread_mutex_unlock(&clientes_mutex);
+    fclose(f);
+    debug("Ficheiro %s gerado com sucesso\n", filename);
+}
 
 // Função auxiliar para converter o tabuleiro em dados para enviar ao cliente
 char* board_to_data(board_t *board) {
@@ -93,6 +174,13 @@ void* session_manager_thread(void *arg) {
         sleep_ms(board->tempo);
         
         pthread_rwlock_rdlock(&board->state_lock);
+        
+        // Atualizar pontuação do cliente no array global
+        if (args->client_index && *args->client_index >= 0) {
+            pthread_mutex_lock(&clientes_mutex);
+            clientes_ativos[*args->client_index].points = board->pacmans[0].points;
+            pthread_mutex_unlock(&clientes_mutex);
+        }
         
         // 1. Preparar o cabeçalho da mensagem (OP_CODE 4)
         msg_board_header_t header = {
@@ -235,6 +323,25 @@ static void processar_sessao(msg_connect_t *pedido) {
     
     debug("Cliente conectado com sucesso!\n");
 
+    // Atribuir ID único ao cliente
+    pthread_mutex_lock(&clientes_mutex);
+    int client_id = next_client_id++;
+    int client_index = -1;
+
+    // Encontrar slot livre no array de clientes
+    for (int i = 0; i < max_games; i++) {
+        if (!clientes_ativos[i].active) {
+            client_index = i;
+            clientes_ativos[i].client_id = client_id;
+            clientes_ativos[i].points = 0;
+            clientes_ativos[i].active = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clientes_mutex);
+    
+    debug("Cliente registado com ID %d no slot %d\n", client_id, client_index);
+
     // Encontrar e carregar o primeiro nível
     char *level_name = find_first_level(levels_dir_global);
     if (!level_name) {
@@ -271,13 +378,17 @@ static void processar_sessao(msg_connect_t *pedido) {
     *thread_shutdown = 0;
     *player_victory = 0;
 
-    // Preparar argumentos para as tarefas
+    // Criar argumentos para a sessão
     session_args_t *s_args = malloc(sizeof(session_args_t));
     s_args->board = game_board;
     s_args->fd_req = fd_req;
     s_args->fd_notif = fd_notif;
     s_args->thread_shutdown = thread_shutdown;
     s_args->player_victory = player_victory;
+    s_args->client_id = client_id;
+    int *client_index_ptr = malloc(sizeof(int));
+    *client_index_ptr = client_index;
+    s_args->client_index = client_index_ptr;
 
     pthread_t tid_pac, tid_sess;
     pthread_t *ghost_tids = malloc(game_board->n_ghosts * sizeof(pthread_t));
@@ -302,12 +413,21 @@ static void processar_sessao(msg_connect_t *pedido) {
         pthread_join(ghost_tids[i], NULL);
     }
 
+    // Marcar cliente como inativo
+    if (client_index >= 0) {
+        pthread_mutex_lock(&clientes_mutex);
+        clientes_ativos[client_index].active = 0;
+        pthread_mutex_unlock(&clientes_mutex);
+        debug("Cliente ID %d desconectado\n", client_id);
+    }
+
     // Limpeza da sessão
     close(fd_req);
     close(fd_notif);
     free(ghost_tids);
     free(thread_shutdown);
     free(player_victory);
+    if (s_args->client_index) free(s_args->client_index);
     unload_level(game_board);
     free(game_board);
     free(s_args);
@@ -320,6 +440,12 @@ static void processar_sessao(msg_connect_t *pedido) {
 // ============================================================================
 static void* session_worker(void *arg) {
     (void)arg;
+    
+    // Bloquear SIGUSR1 nesta thread (só a tarefa anfitriã deve receber)
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
     
     while (1) {
         // 1. Esperar por um pedido no buffer
@@ -362,13 +488,33 @@ int main(int argc, char** argv) {
     open_debug_file("server-debug.log");
 
     // ========================================================================
-    // 1. Inicializar semáforos para o buffer produtor-consumidor
+    // 1. Inicializar array de clientes e configurar handler SIGUSR1
+    // ========================================================================
+    clientes_ativos = calloc(max_games, sizeof(client_info_t));
+    for (int i = 0; i < max_games; i++) {
+        pthread_mutex_init(&clientes_ativos[i].lock, NULL);
+    }
+    
+    // Configurar handler SIGUSR1 (só para a tarefa anfitriã)
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler_sigusr1;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  // NÃO usar SA_RESTART - queremos interromper syscalls
+    if (sigaction(SIGUSR1, &sa, NULL) == -1) {
+        perror("Erro ao configurar handler SIGUSR1");
+        return -1;
+    }
+    debug("Handler SIGUSR1 configurado\n");
+
+    // ========================================================================
+    // 2. Inicializar semáforos para o buffer produtor-consumidor
     // ========================================================================
     sem_init(&slots_vazios, 0, max_games);      // max_games slots livres
     sem_init(&pedidos_disponiveis, 0, 0);       // 0 pedidos inicialmente
 
     // ========================================================================
-    // 2. Criar as tarefas worker (max_games tarefas)
+    // 3. Criar as tarefas worker (max_games tarefas)
     // ========================================================================
     pthread_t *worker_threads = malloc(max_games * sizeof(pthread_t));
     for (int i = 0; i < max_games; i++) {
@@ -377,7 +523,7 @@ int main(int argc, char** argv) {
     debug("Criadas %d tarefas worker\n", max_games);
 
     // ========================================================================
-    // 3. Criar o FIFO de registo do servidor
+    // 4. Criar o FIFO de registo do servidor
     // ========================================================================
     unlink(fifo_registo_nome); // Remover se já existir
     if (mkfifo(fifo_registo_nome, 0666) == -1) {
@@ -387,18 +533,79 @@ int main(int argc, char** argv) {
     
     debug("Servidor iniciado. FIFO: %s, max_games: %d\n", fifo_registo_nome, max_games);
     
-    int fd_registo = open(fifo_registo_nome, O_RDONLY);
+    // Abrir FIFO em modo não-bloqueante para não ficar preso se não houver escritores
+    // Depois mudamos para bloqueante quando necessário
+    int fd_registo;
+    do {
+        fd_registo = open(fifo_registo_nome, O_RDONLY | O_NONBLOCK);
+    } while (fd_registo < 0 && errno == EINTR);
+    
     if (fd_registo < 0) {
         perror("Erro ao abrir FIFO de registo");
         unlink(fifo_registo_nome);
         return -1;
     }
+    
+    // Mudar para modo bloqueante para reads normais
+    int flags = fcntl(fd_registo, F_GETFL);
+    fcntl(fd_registo, F_SETFL, flags & ~O_NONBLOCK);
 
     // ========================================================================
-    // 4. Ciclo da Tarefa Anfitriã - recebe pedidos e coloca no buffer
+    // 5. Ciclo da Tarefa Anfitriã - recebe pedidos e coloca no buffer
     // ========================================================================
     msg_connect_t pedido;
-    while (read(fd_registo, &pedido, sizeof(msg_connect_t)) > 0) {
+    fd_set read_fds;
+    struct timeval timeout;
+    
+    while (1) {
+        // Verificar se recebeu SIGUSR1 (no início do loop)
+        if (sigusr1_recebido) {
+            debug("Flag sigusr1_recebido detectada, gerando ficheiro...\n");
+            sigusr1_recebido = 0;  // Reset
+            gerar_top5_clientes("top5_clientes.txt");
+            debug("Ficheiro top5 gerado após SIGUSR1\n");
+        }
+        
+        // Configurar select com timeout para verificar sinal periodicamente
+        FD_ZERO(&read_fds);
+        FD_SET(fd_registo, &read_fds);
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 500000;  // 500ms
+        
+        int ready = select(fd_registo + 1, &read_fds, NULL, NULL, &timeout);
+        
+        if (ready < 0) {
+            if (errno == EINTR) {
+                // Interrompido por sinal, continuar para verificar SIGUSR1
+                continue;
+            }
+            // Outro erro
+            debug("Erro em select: %d\n", errno);
+            break;
+        }
+        
+        if (ready <= 0) {
+            // Timeout ou erro, continuar
+            continue;
+        }
+        
+        // Dados disponíveis para leitura
+        ssize_t bytes_read = read(fd_registo, &pedido, sizeof(msg_connect_t));
+        
+        if (bytes_read <= 0) {
+            // FIFO fechado, reabrir com retry em caso de EINTR
+            close(fd_registo);
+            do {
+                fd_registo = open(fifo_registo_nome, O_RDONLY);
+            } while (fd_registo < 0 && errno == EINTR);
+            
+            if (fd_registo < 0) {
+                debug("Erro ao reabrir FIFO de registo\n");
+                break;
+            }
+            continue;
+        }
+        
         if (pedido.op_code == OP_CODE_CONNECT) {
             debug("Anfitriã: Pedido de conexão recebido\n");
             debug("  Pipe pedidos: %s\n", pedido.req_pipe_path);
@@ -418,27 +625,22 @@ int main(int argc, char** argv) {
             
             debug("Anfitriã: Pedido inserido no buffer\n");
         }
-        
-        // Reabrir o FIFO para continuar a receber (comportamento FIFO em Linux)
-        // Quando o último escritor fecha, read retorna 0
-        // Precisamos reabrir para continuar a aceitar novas conexões
-        if (read(fd_registo, &pedido, sizeof(msg_connect_t)) == 0) {
-            close(fd_registo);
-            fd_registo = open(fifo_registo_nome, O_RDONLY);
-            if (fd_registo < 0) {
-                debug("Erro ao reabrir FIFO de registo\n");
-                break;
-            }
-        }
     }
 
     // ========================================================================
-    // 5. Limpeza (nunca chega aqui em operação normal)
+    // 6. Limpeza (nunca chega aqui em operação normal)
     // ========================================================================
     close(fd_registo);
     unlink(fifo_registo_nome);
     sem_destroy(&slots_vazios);
     sem_destroy(&pedidos_disponiveis);
+    
+    // Limpar array de clientes
+    for (int i = 0; i < max_games; i++) {
+        pthread_mutex_destroy(&clientes_ativos[i].lock);
+    }
+    free(clientes_ativos);
+    
     free(worker_threads);
     close_debug_file();
     return 0;
