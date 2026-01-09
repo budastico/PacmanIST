@@ -1,6 +1,30 @@
 Handler SIGUSR1 configurado
-Criadas 3 tarefas worker
-Servidor iniciado. FIFO: /tmp/pacman_server, max_games: 3
-Flag sigusr1_recebido detectada, gerando ficheiro...
-Ficheiro top5_clientes.txt gerado com sucesso
-Ficheiro top5 gerado após SIGUSR1
+Criadas 2 tarefas worker
+Servidor iniciado. FIFO: /tmp/pacman_server, max_games: 2
+Anfitriã: Pedido de conexão recebido
+  Pipe pedidos: /tmp/1_request
+  Pipe notificações: /tmp/1_notification
+Anfitriã: Pedido inserido no buffer
+Worker: A processar pedido de conexão
+  Pipe pedidos: /tmp/1_request
+  Pipe notificações: /tmp/1_notification
+Cliente conectado com sucesso!
+Cliente registado com ID 1 no slot 0
+DIM = 6 x 6
+TEMPO = 1000
+PAC = levels/pacman.p
+MON file: levels/1.m
+MON file: levels/3.m
+Line: XXoXXX
+Line: XoooXX
+Line: XoXoXX
+Line: Xooo@X
+Line: XooooX
+Line: XXXXXX
+Pacman passo: 1
+Pacman Pos = 1 x 1
+Ghost passo: 1
+Ghost Pos = 4 x 1
+Ghost passo: 1
+Ghost Pos = 4 x 2
+Nível carregado: 6x6

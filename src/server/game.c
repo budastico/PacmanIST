@@ -47,6 +47,7 @@ typedef struct {
     int client_id;           // ID único do cliente
     int points;              // Pontuação atual
     int active;              // Se está ativo (1) ou não (0)
+    board_t *board;          // Ponteiro para o tabuleiro do cliente
     pthread_mutex_t lock;    // Para acesso concorrente
 } client_info_t;
 
@@ -87,48 +88,101 @@ void handler_sigusr1(int sig) {
 }
 
 // ============================================================================
-// FUNÇÃO PARA GERAR FICHEIRO COM TOP 5 CLIENTES
+// FUNÇÃO PARA GERAR LOG COM ESTADO DE TODOS OS TABULEIROS (EXERCÍCIO 2)
 // ============================================================================
-void gerar_top5_clientes(const char *filename) {
+void gerar_log_tabuleiros(const char *filename) {
     FILE *f = fopen(filename, "w");
     if (!f) {
         debug("Erro ao criar ficheiro %s\n", filename);
         return;
     }
     
+    time_t now = time(NULL);
+    fprintf(f, "=== LOG DE ESTADO DOS TABULEIROS ===\n");
+    fprintf(f, "Data/Hora: %s", ctime(&now));
+    fprintf(f, "====================================\n\n");
+    
     pthread_mutex_lock(&clientes_mutex);
     
-    // Copiar clientes ativos para array temporário
-    client_info_t temp[MAX_BUFFER_SIZE];
-    int count = 0;
+    int jogos_ativos = 0;
     for (int i = 0; i < max_games; i++) {
         if (clientes_ativos[i].active) {
-            temp[count++] = clientes_ativos[i];
+            jogos_ativos++;
         }
     }
     
-    // Ordenar por pontuação (bubble sort simples)
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = 0; j < count - i - 1; j++) {
-            if (temp[j].points < temp[j+1].points) {
-                client_info_t aux = temp[j];
-                temp[j] = temp[j+1];
-                temp[j+1] = aux;
+    fprintf(f, "Jogos ativos: %d / %d\n\n", jogos_ativos, max_games);
+    
+    // Percorrer todos os clientes ativos e descrever o estado do tabuleiro
+    for (int i = 0; i < max_games; i++) {
+        if (!clientes_ativos[i].active) continue;
+        
+        client_info_t *cliente = &clientes_ativos[i];
+        board_t *board = cliente->board;
+        
+        fprintf(f, "--- Cliente ID: %d ---\n", cliente->client_id);
+        fprintf(f, "Pontuação: %d\n", cliente->points);
+        
+        if (board == NULL) {
+            fprintf(f, "Estado: Tabuleiro não disponível\n\n");
+            continue;
+        }
+        
+        // Adquirir read lock no tabuleiro para leitura segura
+        pthread_rwlock_rdlock(&board->state_lock);
+        
+        fprintf(f, "Nível: %s\n", board->level_name);
+        fprintf(f, "Dimensões: %d x %d\n", board->width, board->height);
+        fprintf(f, "Tempo por jogada: %d ms\n", board->tempo);
+        
+        // Estado do Pacman
+        if (board->n_pacmans > 0) {
+            pacman_t *pac = &board->pacmans[0];
+            fprintf(f, "Pacman: posição (%d, %d), vivo=%d, pontos=%d\n",
+                    pac->pos_x, pac->pos_y, pac->alive, pac->points);
+        }
+        
+        // Estado dos fantasmas
+        fprintf(f, "Fantasmas: %d\n", board->n_ghosts);
+        for (int g = 0; g < board->n_ghosts; g++) {
+            ghost_t *ghost = &board->ghosts[g];
+            fprintf(f, "  Fantasma %d: posição (%d, %d), charged=%d\n",
+                    g, ghost->pos_x, ghost->pos_y, ghost->charged);
+        }
+        
+        // Desenhar o tabuleiro
+        fprintf(f, "\nTabuleiro:\n");
+        for (int y = 0; y < board->height; y++) {
+            for (int x = 0; x < board->width; x++) {
+                int idx = y * board->width + x;
+                board_pos_t *pos = &board->board[idx];
+                char c = pos->content;
+                
+                // Mostrar conteúdo ou ponto
+                if (c == ' ' || c == '\0') {
+                    if (pos->has_dot) {
+                        fprintf(f, ".");
+                    } else if (pos->has_portal) {
+                        fprintf(f, "O");
+                    } else {
+                        fprintf(f, " ");
+                    }
+                } else {
+                    fprintf(f, "%c", c);
+                }
             }
+            fprintf(f, "\n");
         }
-    }
-    
-    // Escrever top 5 (ou menos se houver menos de 5)
-    int top = count < 5 ? count : 5;
-    fprintf(f, "TOP %d CLIENTES:\n", top);
-    for (int i = 0; i < top; i++) {
-        fprintf(f, "%d. Cliente ID %d - %d pontos\n", 
-                i+1, temp[i].client_id, temp[i].points);
+        
+        pthread_rwlock_unlock(&board->state_lock);
+        fprintf(f, "\n");
     }
     
     pthread_mutex_unlock(&clientes_mutex);
+    
+    fprintf(f, "=== FIM DO LOG ===\n");
     fclose(f);
-    debug("Ficheiro %s gerado com sucesso\n", filename);
+    debug("Ficheiro de log %s gerado com sucesso\n", filename);
 }
 
 // Função auxiliar para converter o tabuleiro em dados para enviar ao cliente
@@ -334,6 +388,7 @@ static void processar_sessao(msg_connect_t *pedido) {
             client_index = i;
             clientes_ativos[i].client_id = client_id;
             clientes_ativos[i].points = 0;
+            clientes_ativos[i].board = NULL;  // Será preenchido após carregar o nível
             clientes_ativos[i].active = 1;
             break;
         }
@@ -371,6 +426,13 @@ static void processar_sessao(msg_connect_t *pedido) {
     free(level_name);
     
     debug("Nível carregado: %dx%d\n", game_board->width, game_board->height);
+
+    // Associar o tabuleiro ao cliente para o log SIGUSR1
+    if (client_index >= 0) {
+        pthread_mutex_lock(&clientes_mutex);
+        clientes_ativos[client_index].board = game_board;
+        pthread_mutex_unlock(&clientes_mutex);
+    }
 
     // Flags de controlo por sessão (alocadas dinamicamente)
     int *thread_shutdown = malloc(sizeof(int));
@@ -413,9 +475,10 @@ static void processar_sessao(msg_connect_t *pedido) {
         pthread_join(ghost_tids[i], NULL);
     }
 
-    // Marcar cliente como inativo
+    // Marcar cliente como inativo e limpar referência ao board
     if (client_index >= 0) {
         pthread_mutex_lock(&clientes_mutex);
+        clientes_ativos[client_index].board = NULL;  // Limpar antes de desalocar
         clientes_ativos[client_index].active = 0;
         pthread_mutex_unlock(&clientes_mutex);
         debug("Cliente ID %d desconectado\n", client_id);
@@ -562,21 +625,22 @@ int main(int argc, char** argv) {
         if (sigusr1_recebido) {
             debug("Flag sigusr1_recebido detectada, gerando ficheiro...\n");
             sigusr1_recebido = 0;  // Reset
-            gerar_top5_clientes("top5_clientes.txt");
-            debug("Ficheiro top5 gerado após SIGUSR1\n");
+            gerar_log_tabuleiros("estado_tabuleiros.log");
+            debug("Ficheiro de log gerado após SIGUSR1\n");
         }
         
         // Configurar select com timeout para verificar sinal periodicamente
         FD_ZERO(&read_fds);
         FD_SET(fd_registo, &read_fds);
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 500000;  // 500ms
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;  // 1 segundo
         
         int ready = select(fd_registo + 1, &read_fds, NULL, NULL, &timeout);
         
         if (ready < 0) {
             if (errno == EINTR) {
                 // Interrompido por sinal, continuar para verificar SIGUSR1
+                debug("Select interrompido por sinal\n");
                 continue;
             }
             // Outro erro
@@ -584,8 +648,8 @@ int main(int argc, char** argv) {
             break;
         }
         
-        if (ready <= 0) {
-            // Timeout ou erro, continuar
+        if (ready == 0) {
+            // Timeout - volta ao início do loop para verificar flag
             continue;
         }
         

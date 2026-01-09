@@ -1,0 +1,14 @@
+DIM 10 10
+TEMPO 2000
+PAC pacman.p
+MON 1.m
+XXXXXXXXXX
+XooooooooX
+XooooooooX
+XooooooooX
+XooooooooX
+XooooooooX
+XooooooooX
+XooooooooX
+Xooooooo@X
+XXXXXXXXXX
