@@ -20,10 +20,6 @@
 #define QUIT_GAME 2
 #define MAX_BUFFER_SIZE 64
 
-// ============================================================================
-// VARIÁVEIS GLOBAIS PARA O BUFFER PRODUTOR-CONSUMIDOR (Etapa 1.2)
-// ============================================================================
-
 // Buffer circular para pedidos de conexão
 static msg_connect_t pedidos_buffer[MAX_BUFFER_SIZE];
 static int buffer_read_idx = 0;   // Índice de leitura (consumidores)
@@ -37,10 +33,6 @@ static pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
 // Configuração do servidor
 static int max_games = 1;
 static char *levels_dir_global = NULL;
-
-// ============================================================================
-// ESTRUTURAS E VARIÁVEIS PARA GESTÃO DE CLIENTES E SIGUSR1
-// ============================================================================
 
 // Estrutura para guardar informação de clientes ativos
 typedef struct {
@@ -76,21 +68,12 @@ typedef struct {
     int *thread_shutdown;  // Flag por sessão
 } ghost_thread_arg_t;
 
-// ============================================================================
-// HANDLER DE SINAL SIGUSR1
-// ============================================================================
 void handler_sigusr1(int sig) {
     (void)sig;
     sigusr1_recebido = 1;  // Memorizar que recebeu SIGUSR1
-    // Nota: não podemos usar debug() aqui (não é async-signal-safe)
-    // mas podemos escrever diretamente em stderr
     write(STDERR_FILENO, "SIGUSR1 recebido!\n", 18);
 }
 
-// ============================================================================
-// FUNÇÃO PARA GERAR LOG COM ESTADO DE TODOS OS TABULEIROS (EXERCÍCIO 2)
-// ============================================================================
-// Função para gerar ficheiro com top 5 clientes
 void gerar_top5_clientes(const char *filename) {
     FILE *f = fopen(filename, "w");
     if (!f) {
@@ -102,7 +85,6 @@ void gerar_top5_clientes(const char *filename) {
     
     time_t now = time(NULL);
     fprintf(f, "=== TOP 5 CLIENTES ===\n");
-    fprintf(f, "Data/Hora: %s\n", ctime(&now));
     
     pthread_mutex_lock(&clientes_mutex);
     
@@ -209,7 +191,6 @@ char* board_to_data(board_t *board) {
     return data;
 }
 
-// --- TAREFA GESTORA DE SESSÃO ---
 // Envia o estado do tabuleiro periodicamente para o cliente
 void* session_manager_thread(void *arg) {
     session_args_t *args = (session_args_t*) arg;
@@ -229,7 +210,7 @@ void* session_manager_thread(void *arg) {
             pthread_mutex_unlock(&clientes_mutex);
         }
         
-        // 1. Preparar o cabeçalho da mensagem (OP_CODE 4)
+        // Preparar o cabeçalho da mensagem (OP_CODE 4)
         msg_board_header_t header = {
             .op_code = OP_CODE_BOARD,
             .width = board->width,
@@ -240,14 +221,14 @@ void* session_manager_thread(void *arg) {
             .accumulated_points = board->pacmans[0].points
         };
 
-        // 2. Converter tabuleiro para dados
+        // Converter tabuleiro para dados
         char *board_data = board_to_data(board);
         
         pthread_rwlock_unlock(&board->state_lock);
         
         if (!board_data) break;
 
-        // 3. Enviar cabeçalho e depois os dados do tabuleiro
+        // Enviar cabeçalho e depois os dados do tabuleiro
         if (write(args->fd_notif, &header, sizeof(header)) <= 0) {
             free(board_data);
             break; 
@@ -264,7 +245,6 @@ void* session_manager_thread(void *arg) {
     return NULL;
 }
 
-// --- TAREFA DO PACMAN ---
 // Lê comandos do FIFO de pedidos em vez do teclado
 void* pacman_thread(void *arg) {
     session_args_t *args = (session_args_t*) arg;
@@ -294,7 +274,6 @@ void* pacman_thread(void *arg) {
     return NULL;
 }
 
-// --- TAREFA DOS MONSTROS (Mantém-se igual à Parte 1) ---
 void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
     board_t *board = ghost_arg->board;
@@ -337,9 +316,6 @@ char* find_first_level(const char *levels_dir) {
     return NULL;
 }
 
-// ============================================================================
-// FUNÇÃO QUE PROCESSA UMA SESSÃO COMPLETA (Etapa 1.2)
-// ============================================================================
 static void processar_sessao(msg_connect_t *pedido) {
     debug("Worker: A processar pedido de conexão\n");
     debug("  Pipe pedidos: %s\n", pedido->req_pipe_path);
@@ -491,9 +467,6 @@ static void processar_sessao(msg_connect_t *pedido) {
     debug("Sessão terminada.\n");
 }
 
-// ============================================================================
-// TAREFA WORKER - Retira pedidos do buffer e processa (Etapa 1.2)
-// ============================================================================
 static void* session_worker(void *arg) {
     (void)arg;
     
@@ -504,26 +477,25 @@ static void* session_worker(void *arg) {
     pthread_sigmask(SIG_BLOCK, &set, NULL);
     
     while (1) {
-        // 1. Esperar por um pedido no buffer
+        // Esperar por um pedido no buffer
         sem_wait(&pedidos_disponiveis);
         
-        // 2. Retirar o pedido do buffer (secção crítica)
+        // Retirar o pedido do buffer (secção crítica)
         pthread_mutex_lock(&buffer_mutex);
         msg_connect_t pedido = pedidos_buffer[buffer_read_idx];
         buffer_read_idx = (buffer_read_idx + 1) % MAX_BUFFER_SIZE;
         pthread_mutex_unlock(&buffer_mutex);
         
-        // 3. Processar a sessão
+        // Processar a sessão
         processar_sessao(&pedido);
         
-        // 4. Sinalizar que há um slot livre
+        // Sinalizar que há um slot livre
         sem_post(&slots_vazios);
     }
     
     return NULL;
 }
 
-// --- MAIN DO SERVIDOR ---
 int main(int argc, char** argv) {
     if (argc != 4) {
         printf("Usage: %s <level_dir> <max_games> <fifo_registo>\n", argv[0]);
@@ -543,9 +515,6 @@ int main(int argc, char** argv) {
     srand((unsigned int)time(NULL));
     open_debug_file("server-debug.log");
 
-    // ========================================================================
-    // 1. Inicializar array de clientes e configurar handler SIGUSR1
-    // ========================================================================
     clientes_ativos = calloc(max_games, sizeof(client_info_t));
     for (int i = 0; i < max_games; i++) {
         pthread_mutex_init(&clientes_ativos[i].lock, NULL);
@@ -563,24 +532,16 @@ int main(int argc, char** argv) {
     }
     debug("Handler SIGUSR1 configurado\n");
 
-    // ========================================================================
-    // 2. Inicializar semáforos para o buffer produtor-consumidor
-    // ========================================================================
+    
     sem_init(&slots_vazios, 0, max_games);      // max_games slots livres
     sem_init(&pedidos_disponiveis, 0, 0);       // 0 pedidos inicialmente
 
-    // ========================================================================
-    // 3. Criar as tarefas worker (max_games tarefas)
-    // ========================================================================
     pthread_t *worker_threads = malloc(max_games * sizeof(pthread_t));
     for (int i = 0; i < max_games; i++) {
         pthread_create(&worker_threads[i], NULL, session_worker, NULL);
     }
     debug("Criadas %d tarefas worker\n", max_games);
 
-    // ========================================================================
-    // 4. Criar o FIFO de registo do servidor
-    // ========================================================================
     unlink(fifo_registo_nome); // Remover se já existir
     if (mkfifo(fifo_registo_nome, 0666) == -1) {
         perror("Erro ao criar FIFO de registo");
@@ -598,25 +559,13 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Opcional: Colocar em modo não-bloqueante para garantir que o read() não pare a execução
+    //Colocar em modo não-bloqueante para garantir que o read() não pare a execução
     fcntl(fd_registo, F_SETFL, O_NONBLOCK);
     
-    // MANTER em modo não-bloqueante para o select() funcionar corretamente
-    // (não mudar para bloqueante)
-
-    // ========================================================================
-    // 5. Ciclo da Tarefa Anfitriã - recebe pedidos e coloca no buffer
-    // ========================================================================
     msg_connect_t pedido;
     fd_set read_fds;
     
     while (1) {
-        // Verificar se recebeu SIGUSR1 (no início do loop)
-        // DEBUG: mostrar valor da flag
-        static int debug_count = 0;
-        if (++debug_count % 10 == 0) {
-            debug("Loop %d: sigusr1_recebido = %d\n", debug_count, sigusr1_recebido);
-        }
         
         if (sigusr1_recebido) {
             debug("Flag sigusr1_recebido detectada, gerando ficheiro...\n");
@@ -633,9 +582,7 @@ int main(int argc, char** argv) {
         FD_ZERO(&read_fds);
         FD_SET(fd_registo, &read_fds);
         
-        debug("Antes de select()...\n");
         int ready = select(fd_registo + 1, &read_fds, NULL, NULL, &timeout);
-        debug("Select retornou: ready=%d, errno=%d\n", ready, errno);
         
         if (ready < 0) {
             if (errno == EINTR) {
@@ -696,9 +643,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ========================================================================
-    // 6. Limpeza (nunca chega aqui em operação normal)
-    // ========================================================================
     close(fd_registo);
     unlink(fifo_registo_nome);
     sem_destroy(&slots_vazios);

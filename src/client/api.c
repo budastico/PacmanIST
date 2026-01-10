@@ -21,48 +21,48 @@ struct Session {
 static struct Session session = {.id = -1};
 
 int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char const *server_pipe_path) {
-    // 1. Remover FIFOs antigos se existirem
+    // Remover FIFOs antigos se existirem
     unlink(req_pipe_path);
     unlink(notif_pipe_path);
     
-    // 2. Criar os FIFOs do cliente [cite: 39]
+    // Criar os FIFOs do cliente
     if (mkfifo(req_pipe_path, 0666) == -1 || mkfifo(notif_pipe_path, 0666) == -1) {
         return 1;
     }
 
-    // 2. Abrir o FIFO do servidor para enviar o pedido [cite: 40]
+    // Abrir o FIFO do servidor para enviar o pedido
     int server_fd = open(server_pipe_path, O_WRONLY);
     if (server_fd == -1) return 1;
 
-    // 3. Preparar a mensagem de conexão (OP_CODE 1) [cite: 80]
+    // Preparar a mensagem de conexão (OP_CODE 1)
     msg_connect_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.op_code = OP_CODE_CONNECT;
     strncpy(msg.req_pipe_path, req_pipe_path, MAX_PIPE_PATH_LENGTH);
     strncpy(msg.notif_pipe_path, notif_pipe_path, MAX_PIPE_PATH_LENGTH);
 
-    // Enviar o pedido [cite: 22]
+    // Enviar o pedido 
     if (write(server_fd, &msg, sizeof(msg)) == -1) {
         close(server_fd);
         return 1;
     }
     close(server_fd);
 
-    // 4. Abrir os nossos pipes e esperar confirmação do servidor [cite: 78, 81]
+    // Abrir os nossos pipes e esperar confirmação do servidor 
     session.notif_pipe = open(notif_pipe_path, O_RDONLY);
     session.req_pipe = open(req_pipe_path, O_WRONLY);
 
     msg_connect_res_t res;
     if (read(session.notif_pipe, &res, sizeof(res)) > 0) {
         if (res.op_code == OP_CODE_CONNECT && res.result == 0) {
-            // Guardar caminhos para o disconnect mais tarde [cite: 43]
+            // Guardar caminhos para o disconnect mais tarde 
             strncpy(session.req_pipe_path, req_pipe_path, MAX_PIPE_PATH_LENGTH);
             strncpy(session.notif_pipe_path, notif_pipe_path, MAX_PIPE_PATH_LENGTH);
-            return 0; // Sucesso! [cite: 41, 102]
+            return 0;
         }
     }
 
-    return 1; // Erro [cite: 41]
+    return 1;
 }
 
 void pacman_play(char command) {
@@ -98,7 +98,7 @@ Board receive_board_update(void) {
     Board b = {0};
     msg_board_header_t header;
 
-    // 1. Ler cabeçalho
+    // Ler cabeçalho
     if (read(session.notif_pipe, &header, sizeof(header)) <= 0) {
         return b; // Retorna Board vazio em caso de erro
     }
@@ -107,7 +107,7 @@ Board receive_board_update(void) {
         return b;
     }
 
-    // 2. Alocar e ler os dados do tabuleiro
+    // Alocar e ler os dados do tabuleiro
     int board_size = header.width * header.height;
     char *board_data = malloc(board_size * sizeof(char));
     if (board_data == NULL) {
@@ -115,7 +115,7 @@ Board receive_board_update(void) {
     }
     read(session.notif_pipe, board_data, board_size);
 
-    // 3. Preencher a estrutura Board
+    // Preencher a estrutura Board
     b.width = header.width;
     b.height = header.height;
     b.tempo = header.tempo;
