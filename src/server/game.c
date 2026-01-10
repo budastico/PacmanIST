@@ -591,16 +591,15 @@ int main(int argc, char** argv) {
     
     // Abrir FIFO em modo não-bloqueante para não ficar preso se não houver escritores
     // Depois mudamos para bloqueante quando necessário
-    int fd_registo;
-    do {
-        fd_registo = open(fifo_registo_nome, O_RDONLY | O_NONBLOCK);
-    } while (fd_registo < 0 && errno == EINTR);
-    
+    int fd_registo = open(fifo_registo_nome, O_RDWR);
     if (fd_registo < 0) {
         perror("Erro ao abrir FIFO de registo");
         unlink(fifo_registo_nome);
         return -1;
     }
+
+    // Opcional: Colocar em modo não-bloqueante para garantir que o read() não pare a execução
+    fcntl(fd_registo, F_SETFL, O_NONBLOCK);
     
     // MANTER em modo não-bloqueante para o select() funcionar corretamente
     // (não mudar para bloqueante)
@@ -610,10 +609,15 @@ int main(int argc, char** argv) {
     // ========================================================================
     msg_connect_t pedido;
     fd_set read_fds;
-    struct timeval timeout;
     
     while (1) {
         // Verificar se recebeu SIGUSR1 (no início do loop)
+        // DEBUG: mostrar valor da flag
+        static int debug_count = 0;
+        if (++debug_count % 10 == 0) {
+            debug("Loop %d: sigusr1_recebido = %d\n", debug_count, sigusr1_recebido);
+        }
+        
         if (sigusr1_recebido) {
             debug("Flag sigusr1_recebido detectada, gerando ficheiro...\n");
             sigusr1_recebido = 0;  // Reset
@@ -621,19 +625,17 @@ int main(int argc, char** argv) {
             debug("Ficheiro top5_clientes.txt gerado após SIGUSR1\n");
         }
         
-        // DEBUG: indicar que o loop está a executar
-        static int loop_count = 0;
-        if (++loop_count % 10 == 0) {
-            debug("Loop anfitriã executando (iteração %d)\n", loop_count);
-        }
-        
-        // Configurar select com timeout para verificar sinal periodicamente
-        FD_ZERO(&read_fds);
-        FD_SET(fd_registo, &read_fds);
+        // Configurar select com timeout (DEVE ser reinicializado em cada iteração!)
+        struct timeval timeout;
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;  // 1 segundo
         
+        FD_ZERO(&read_fds);
+        FD_SET(fd_registo, &read_fds);
+        
+        debug("Antes de select()...\n");
         int ready = select(fd_registo + 1, &read_fds, NULL, NULL, &timeout);
+        debug("Select retornou: ready=%d, errno=%d\n", ready, errno);
         
         if (ready < 0) {
             if (errno == EINTR) {
@@ -648,12 +650,10 @@ int main(int argc, char** argv) {
         
         if (ready == 0) {
             // Timeout - volta ao início do loop para verificar flag
-            debug("Select timeout, voltando ao início do loop\n");
             continue;
         }
         
         // Dados disponíveis para leitura
-        debug("Select retornou ready=%d, tentando ler...\n", ready);
         ssize_t bytes_read = read(fd_registo, &pedido, sizeof(msg_connect_t));
         
         if (bytes_read <= 0) {
