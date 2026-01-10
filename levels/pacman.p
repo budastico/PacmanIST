@@ -1,5 +1,5 @@
-PASSO 1
-POS 1 1
+PASSO 0
+POS 1 4
 D
 D
 D
